@@ -1,5 +1,6 @@
 import scrapy
 import json
+import random
 
 class FipeCrawler(scrapy.Spider):
     name = "fipe_crawler"
@@ -12,48 +13,67 @@ class FipeCrawler(scrapy.Spider):
     
     def parse_marcas(self, response):
         marcas = json.loads(response.body)
-        honda_id = None
         
-        # Procura o código da Honda na lista de marcas
+        # Agora buscamos todas as marcas
         for marca in marcas:
-            if "honda" in marca["nome"].lower():
-                honda_id = marca["codigo"]
-                break
-        
-        if honda_id:
-            # Após encontrar a Honda, busca os modelos dessa marca
-            modelos_url = f"https://parallelum.com.br/fipe/api/v1/carros/marcas/{honda_id}/modelos"
-            yield scrapy.Request(url=modelos_url, callback=self.parse_modelos)
+            marca_id = marca["codigo"]
+            marca_nome = marca["nome"]
+            
+            # Busca os modelos para cada marca
+            modelos_url = f"https://parallelum.com.br/fipe/api/v1/carros/marcas/{marca_id}/modelos"
+            yield scrapy.Request(
+                url=modelos_url, 
+                callback=self.parse_modelos,
+                meta={'marca_id': marca_id, 'marca_nome': marca_nome}
+            )
     
     def parse_modelos(self, response):
         dados = json.loads(response.body)
         modelos = dados["modelos"]
+        marca_id = response.meta['marca_id']
+        marca_nome = response.meta['marca_nome']
         
-        civic_id = None
+        # Seleciona até 20 modelos aleatórios (ou todos se houver menos de 20)
+        modelos_limite = min(20, len(modelos))
+        modelos_selecionados = random.sample(modelos, modelos_limite)
         
-        # Procura o modelo Civic na lista de modelos da Honda
-        for modelo in modelos:
-            if "civic" in modelo["nome"].lower():
-                civic_id = modelo["codigo"]
-                marca_id = response.url.split('/')[-2]
-                
-                # Após encontrar o Civic, busca os anos disponíveis
-                anos_url = f"https://parallelum.com.br/fipe/api/v1/carros/marcas/{marca_id}/modelos/{civic_id}/anos"
-                yield scrapy.Request(url=anos_url, 
-                                     callback=self.parse_anos,
-                                     meta={'marca_id': marca_id, 'modelo_id': civic_id})
+        for modelo in modelos_selecionados:
+            modelo_id = modelo["codigo"]
+            modelo_nome = modelo["nome"]
+            
+            # Para cada modelo, busca os anos disponíveis
+            anos_url = f"https://parallelum.com.br/fipe/api/v1/carros/marcas/{marca_id}/modelos/{modelo_id}/anos"
+            yield scrapy.Request(
+                url=anos_url, 
+                callback=self.parse_anos,
+                meta={
+                    'marca_id': marca_id, 
+                    'marca_nome': marca_nome,
+                    'modelo_id': modelo_id,
+                    'modelo_nome': modelo_nome
+                }
+            )
     
     def parse_anos(self, response):
         anos = json.loads(response.body)
         marca_id = response.meta['marca_id']
+        marca_nome = response.meta['marca_nome']
         modelo_id = response.meta['modelo_id']
+        modelo_nome = response.meta['modelo_nome']
         
         # Para cada ano/versão disponível, busca os detalhes do veículo
-        for ano in anos:
+        # Podemos limitar a um ano por modelo se quisermos reduzir o volume de requisições
+        for ano in anos[:1]:  # Pegamos apenas o primeiro ano por modelo
             ano_codigo = ano["codigo"]
             detalhes_url = f"https://parallelum.com.br/fipe/api/v1/carros/marcas/{marca_id}/modelos/{modelo_id}/anos/{ano_codigo}"
-            yield scrapy.Request(url=detalhes_url, 
-                                 callback=self.parse_detalhes)
+            yield scrapy.Request(
+                url=detalhes_url, 
+                callback=self.parse_detalhes,
+                meta={
+                    'marca_nome': marca_nome,
+                    'modelo_nome': modelo_nome
+                }
+            )
     
     def parse_detalhes(self, response):
         detalhes = json.loads(response.body)
@@ -70,5 +90,15 @@ class FipeCrawler(scrapy.Spider):
             'tipo_veiculo': detalhes.get('TipoVeiculo')
         }
         
-        print(veiculo)
+        self.logger.info(f"Veículo encontrado: {veiculo['marca']} {veiculo['modelo']} - {veiculo['valor']}")
         yield veiculo
+    
+    # Método para iniciar o crawler com configuração para salvar em JSON
+    # Você pode executar com: scrapy crawl fipe_crawler -o veiculos.json
+    custom_settings = {
+        'FEED_FORMAT': 'json',
+        'FEED_URI': 'veiculos.json',
+        'FEED_EXPORT_ENCODING': 'utf-8',
+        # Adiciona delay para evitar sobrecarga na API
+        'DOWNLOAD_DELAY': 0.5,
+    }
